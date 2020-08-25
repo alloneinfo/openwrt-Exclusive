@@ -6,7 +6,7 @@
 # Blog: https://p3terx.com
 #=================================================
 
-name: OpenWrt-lede5.4
+name: OpenWrt-project4.19
 
 on:
   repository_dispatch:
@@ -16,24 +16,25 @@ on:
 #    branches:
 #      - main
 #    paths:
-#      - '5.config'
+#      - 'project.config'
   schedule:
-    - cron: 0 21 */3 * * 
+    - cron: 0 18 */3 * *
   watch:
     types: started
 
 env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
-  REPO_BRANCH: master
+  REPO_URL: https://github.com/project-openwrt/openwrt
+  REPO_BRANCH: openwrt-18.06
   FEEDS_CONF: feeds.conf.default
-  CONFIG_FILE: 5.config
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
+  CONFIG_FILE: project.config
+  DIY_P1_SH: project.sh
+  DIY_P2_SH: project2.sh
   SSH_ACTIONS: false
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
   UPLOAD_COWTRANSFER: true
-  UPLOAD_WETRANSFER: false
+  UPLOAD_WENSHUSHU: false
+  UPLOAD_WETRANSFER: true
   UPLOAD_RELEASE: false
   TZ: Asia/Shanghai
 
@@ -43,10 +44,10 @@ jobs:
     if: github.event.repository.owner.id == github.event.sender.id
 
     steps:
-    - name: 准备工作
+    - name: 检查项目分支
       uses: actions/checkout@main
 
-    - name: 搭建编译环境
+    - name: 安装编译环境
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
@@ -58,40 +59,36 @@ jobs:
         sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
-
     - name: 下载固件源码
       working-directory: /workdir
       run: |
         df -hT $PWD
         git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
-
-    - name: 读取feeds配置
+    - name: 加载自定义设置
       run: |
         [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
         chmod +x $DIY_P1_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
-
-    - name: 下载feeds插件
+    - name: 下载插件
       run: cd openwrt && ./scripts/feeds update -a
 
-    - name: 安装feeds插件
+    - name: 读取插件
       run: cd openwrt && ./scripts/feeds install -a
 
-    - name: 自定义固件设置
+    - name: 更改设置
       run: |
         [ -e files ] && mv files openwrt/files
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
         chmod +x $DIY_P2_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
-
-    - name: SSH云窗口
+    - name: SSH链接管理
       uses: P3TERX/debugger-action@main
       if: env.SSH_ACTIONS == 'true' || contains(github.event.action, 'ssh')
 
-    - name: 下载package文档
+    - name: 下载安装包
       id: package
       run: |
         cd openwrt
@@ -99,7 +96,6 @@ jobs:
         make download -j8
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
-
     - name: 开始编译固件
       id: compile
       run: |
@@ -110,19 +106,18 @@ jobs:
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "::set-env name=DEVICE_NAME::_$(cat DEVICE_NAME)"
         echo "::set-env name=FILE_DATE::_$(date +"%Y%m%d%H%M")"
-
-    - name: 检查空间使用情况
+    - name: 查看磁盘使用情况
       if: (!cancelled())
       run: df -hT
 
-    - name: 上传bin目录插件
+    - name: 上传bin压缩目录
       uses: actions/upload-artifact@main
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
       with:
         name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: openwrt/bin
 
-    - name: 整理文件
+    - name: 整理编译好的固件
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
@@ -130,29 +125,33 @@ jobs:
         rm -rf packages
         echo "::set-env name=FIRMWARE::$PWD"
         echo "::set-output name=status::success"
-
-    - name: 上传编译好的固件
+    - name: 上传固件到github
       uses: actions/upload-artifact@main
       if: steps.organize.outputs.status == 'success' && !cancelled()
       with:
-        name: OpenWrt_5.4${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        name: OpenWrt-project4.19${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
-    - name: 上传固件至COWTRANSFER
+    - name: 上传固件到NN网盘
       if: steps.organize.outputs.status == 'success' && env.UPLOAD_COWTRANSFER == 'true' && !cancelled()
       run: |
         curl -fsSL git.io/file-transfer | sh
         ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
         echo "::warning file=cowtransfer.com::$(cat cowtransfer.log | grep https)"
-
-    - name: 上传固件至WeTransfer
+    - name: 上传固件到WT网盘
       if: steps.organize.outputs.status == 'success' && env.UPLOAD_WETRANSFER == 'true' && !cancelled()
       run: |
         curl -fsSL git.io/file-transfer | sh
         ./transfer wet -s -p 16 --no-progress ${FIRMWARE} 2>&1 | tee wetransfer.log
         echo "::warning file=wetransfer.com::$(cat wetransfer.log | grep https)"
-  
-    - name: Create label
+    - name: 上传固件到文叔叔
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_WENSHUSHU == 'true' && !cancelled()
+      run: |
+        curl -fsSL git.io/file-transfer | sh
+        ./transfer wss -p 16 --no-progress ${FIRMWARE} 2>&1 | tee wenshushu.log
+        echo "::warning file=wenshushu.cn::$(cat wenshushu.log | grep https)"
+        
+    - name: 创建tag标签
       id: tag
       if: env.DEBUG_MODEL == 'false' && env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
@@ -162,7 +161,7 @@ jobs:
         echo "🔍 [WeTransfer](${{ env.WETRANSFER_URL }})" >> release.txt
         echo "::set-output name=status::success"
     
-    - name: Release
+    - name: 上传固件并发布
       uses: softprops/action-gh-release@v1
       if: env.DEBUG_MODEL == 'false' && steps.tag.outputs.status == 'success' && !cancelled()
       env:
@@ -171,3 +170,7 @@ jobs:
         tag_name: ${{ env.RELEASE_TAG }}
         body_path: release.txt
         files: ${{ env.FIRMWARE }}/*
+
+    - name: 微信报告
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      run: curl https://sc.ftqq.com/${{ secrets.SERVERCHAN }}.send?text=${{ env.FILE_NAME }}发布成功-编译结束
